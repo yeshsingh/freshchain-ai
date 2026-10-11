@@ -1,4 +1,4 @@
-# FreshChain AI
+# FreshChain AI frontend
 
 An autonomous perishable-inventory control tower: a hackathon prototype frontend.
 
