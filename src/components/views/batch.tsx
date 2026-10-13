@@ -4,34 +4,92 @@ import Link from "next/link";
 import { ArrowRight, Check, ChevronRight, Droplets, Eye, LoaderCircle, ShoppingCart, Thermometer, Timer, Wind } from "lucide-react";
 import { useMemo } from "react";
 import { cn } from "@/lib/cn";
-import { INCIDENT } from "@/lib/data";
-import { hashString, seededSeries, shelf } from "@/lib/format";
-import { hasDecision, useLiveBatch, type LiveBatch } from "@/lib/live";
+import { api, type BatchDetailOut } from "@/lib/api";
+import { INCIDENT, statusOf, type Category, type IconKey } from "@/lib/data";
+import { hashString, istTime, seededSeries, shelf } from "@/lib/format";
+import { hasDecision, useBackend, useLiveBatch, usePollInterval, type LiveBatch } from "@/lib/live";
 import { AGENT_META, useSim, type AgentId } from "@/lib/sim";
 import { DemandChart, ShelfLifeChart, TempChart } from "../charts";
 import { BatchIcon, ButtonLink, Card, CardHead, Chip, LiveDot, StatusPill } from "../ui";
 import { VisionPanel } from "./vision";
 
-export function BatchView({ id }: { id: string }) {
-  const b = useLiveBatch(id);
-  if (!b) return <div className="py-24 text-center text-ink-3">Batch not found.</div>;
-  return <Batch b={b} />;
+const istDate = (iso: string) =>
+  new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" });
+
+/** Backend batch → the shape this screen renders. */
+function fromBackend(d: BatchDetailOut): LiveBatch {
+  return {
+    id: d.id,
+    name: d.name,
+    variant: d.variant,
+    category: d.category as Category,
+    icon: d.icon as IconKey,
+    units: d.units,
+    unitLabel: d.unitLabel,
+    unitKg: 0,
+    price: d.price,
+    location: d.location,
+    supplier: d.supplier ?? "—",
+    receivedAt: istDate(d.receivedAt),
+    risk: d.risk,
+    shelfLifeH: d.shelfLifeH,
+    printedShelfH: d.printedShelfH,
+    signals: d.signals,
+    action: d.action,
+    actionNote: d.actionNote ?? undefined,
+    temp: { baseline: d.temp.baseline, now: d.temp.now, safe: d.temp.safe, threshold: d.temp.threshold },
+    humidity: d.humidity,
+    ethylene: d.ethylene,
+    vision: { defectPct: d.vision.defectPct, label: d.vision.label, inspectedAt: d.vision.inspectedAt ? istTime(d.vision.inspectedAt) : "—" },
+    demand: { rate: d.demand.rate, forecast: d.demand.forecast ?? d.demand.rate, history: d.demand.history },
+    status: d.status ?? statusOf(d.risk),
+    live: false,
+  };
 }
 
-function Batch({ b }: { b: LiveBatch }) {
+export function BatchView({ id }: { id: string }) {
+  const mode = useSim((s) => s.mode);
+  const local = useLiveBatch(id);
+  const remote = useBackend(`batch:${id}`, () => api.batch(id), usePollInterval())?.batch;
+  // the live strawberry batch follows the on-screen incident; everything else is backend data when connected
+  const b = local?.live
+    ? remote
+      ? { ...local, supplier: remote.supplier ?? local.supplier, receivedAt: istDate(remote.receivedAt) }
+      : local
+    : remote
+      ? fromBackend(remote)
+      : local;
+  if (!b)
+    return <div className="py-24 text-center text-ink-3">{mode === "checking" || mode === "live" ? "Loading batch…" : "Batch not found."}</div>;
+  return <Batch b={b} series={!b.live ? remote?.temp.series : undefined} trace={remote} />;
+}
+
+function Trace({ d }: { d: BatchDetailOut }) {
+  return (
+    <p className="mt-1 text-xs text-ink-3">
+      Lot <span className="font-mono text-ink-2">{d.lotCode}</span>
+      {d.parentBatchId && <> · transferred from {d.parentBatchId}</>}
+      {d.harvestDate && <> · harvested {new Date(d.harvestDate).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</>} · printed expiry{" "}
+      {istDate(d.expiryAt)}
+    </p>
+  );
+}
+
+function Batch({ b, series, trace }: { b: LiveBatch; series?: number[]; trace?: BatchDetailOut }) {
   const phase = useSim((s) => s.phase);
   const liveTemps = useSim((s) => s.temps);
   const vision = useSim((s) => s.vision);
   const temps = useMemo(() => {
     if (b.live) return liveTemps;
+    if (series && series.length > 1) return series;
     const noise = seededSeries(hashString(b.id), 60, 0, 0.14);
     return noise.map((n, i) => {
       const ramp = i < 40 ? 0 : (i - 40) / 19;
       return Math.round((b.temp.baseline + (b.temp.now - b.temp.baseline) * ramp + n) * 100) / 100;
     });
-  }, [b.live, b.id, b.temp.baseline, b.temp.now, liveTemps]);
+  }, [b.live, b.id, b.temp.baseline, b.temp.now, liveTemps, series]);
 
-  const delta = b.temp.now - b.temp.baseline;
+  const delta = Math.round((b.temp.now - b.temp.baseline) * 10) / 10 || 0; // no "−0.0"
   const needed = Math.round((b.units / Math.max(1, b.shelfLifeH)) * 10) / 10;
   const ratio = b.demand.rate / needed;
   const short = ratio < 1;
@@ -69,6 +127,7 @@ function Batch({ b }: { b: LiveBatch }) {
             <p className="mt-1 text-sm text-ink-2">
               {b.units} {b.unitLabel} · {b.variant} · {b.location} · from {b.supplier}, received {b.receivedAt}
             </p>
+            {trace && <Trace d={trace} />}
           </div>
         </div>
         <BatchCta b={b} />

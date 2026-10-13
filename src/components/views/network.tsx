@@ -3,7 +3,9 @@
 import { motion } from "motion/react";
 import { Factory, FileCheck2, HeartHandshake, Leaf, Store, Warehouse, Zap } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { INCIDENT, NODES, WEEK_KG, type NetNode } from "@/lib/data";
+import { api, type NetworkNodeOut } from "@/lib/api";
+import { INCIDENT, NODES, WEEK_KG, type NetNode, type NodeKind } from "@/lib/data";
+import { useBackend, usePollInterval } from "@/lib/live";
 import { fmt, inr } from "@/lib/format";
 import { useSim } from "@/lib/sim";
 import { WeekChart } from "../charts";
@@ -28,6 +30,52 @@ export function NetworkView() {
   );
 }
 
+const KIND: Record<NetworkNodeOut["kind"], NodeKind> = { store: "store", hub: "hub", dark_store: "dark", b2b: "b2b", food_bank: "rescue" };
+
+/** keep chips (and the lines that meet them) inside the map */
+const clampX = (x: number) => Math.min(0.86, Math.max(0.14, x));
+const clampY = (y: number) => Math.min(0.9, Math.max(0.1, y));
+const fit = (n: NetNode): NetNode => ({ ...n, x: clampX(n.x), y: clampY(n.y) });
+
+/** Real coordinates can put two chips on top of each other; nudge later ones down (or up) until they clear. */
+function separate(nodes: NetNode[]): NetNode[] {
+  const out = nodes.map((n) => ({ ...n }));
+  for (let pass = 0; pass < 4; pass++) {
+    for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        const a = out[i];
+        const b = out[j];
+        if (Math.abs(a.x - b.x) < 0.3 && Math.abs(a.y - b.y) < 0.1) {
+          b.y = b.y + 0.1 <= 0.92 ? Math.max(b.y, a.y) + 0.1 : Math.min(b.y, a.y) - 0.1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Network nodes from the backend's logistics agent when connected, else the bundled snapshot. */
+function useNodes(): NetNode[] {
+  const g = useBackend("network", () => api.network("STB-042"), usePollInterval());
+  if (!g) return separate(NODES.map(fit));
+  const nodes = g.nodes.map(
+    (n): NetNode => ({
+      id: n.id,
+      name: n.name,
+      area: n.area,
+      kind: n.id === g.origin ? "origin" : KIND[n.kind],
+      x: n.x,
+      y: n.y,
+      km: n.distanceKm,
+      rate: n.headroomPerH,
+      capacity: n.capacity === undefined ? undefined : n.capacity > 0 ? `Cold space for ${n.capacity}` : "Cold storage full",
+      score: n.score,
+      verdict: n.verdict,
+    }),
+  );
+  return separate([...nodes.filter((n) => n.kind === "origin"), ...nodes.filter((n) => n.kind !== "origin")].map(fit));
+}
+
 function useNetState() {
   const phase = useSim((s) => s.phase);
   const logisticsDone = useSim((s) => s.agents.logistics === "done");
@@ -37,7 +85,9 @@ function useNetState() {
 
 function MapCard() {
   const { phase, selected, moving } = useNetState();
-  const origin = NODES[0];
+  const nodes = useNodes();
+  const origin = nodes[0];
+  const hub = nodes.find((n) => n.kind === "hub") ?? nodes[1];
   const W = 640;
   const H = 400;
   const px = (n: NetNode) => [n.x * W, n.y * H] as const;
@@ -52,7 +102,7 @@ function MapCard() {
       />
       <div className="dot-grid relative mt-5 aspect-[16/10] w-full overflow-hidden rounded-xl bg-subtle/60">
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 size-full" preserveAspectRatio="none" aria-hidden>
-          {NODES.slice(1).map((n) => {
+          {nodes.slice(1).map((n) => {
             const [x, y] = px(n);
             const isHub = n.kind === "hub";
             const fallback = n.kind === "b2b" || n.kind === "rescue";
@@ -80,14 +130,17 @@ function MapCard() {
           <motion.span
             className="absolute z-10 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-brand text-white shadow-lift"
             initial={{ left: `${origin.x * 100}%`, top: `${origin.y * 100}%` }}
-            animate={{ left: `${(origin.x + (NODES[1].x - origin.x) * (phase === "resolved" ? 0.62 : 0.3)) * 100}%`, top: `${(origin.y + (NODES[1].y - origin.y) * (phase === "resolved" ? 0.62 : 0.3)) * 100}%` }}
+            animate={{
+              left: `${(origin.x + (hub.x - origin.x) * (phase === "resolved" ? 0.62 : 0.3)) * 100}%`,
+              top: `${(origin.y + (hub.y - origin.y) * (phase === "resolved" ? 0.62 : 0.3)) * 100}%`,
+            }}
             transition={{ duration: 3, ease: [0.25, 1, 0.5, 1] }}
           >
             <span className="size-2 rounded-full bg-white" />
           </motion.span>
         )}
 
-        {NODES.map((n) => (
+        {nodes.map((n) => (
           <NodeChip key={n.id} n={n} selected={selected} phase={phase} />
         ))}
       </div>
@@ -134,7 +187,9 @@ function NodeChip({ n, selected, phase }: { n: NetNode; selected: boolean; phase
 
 function Candidates() {
   const { selected } = useNetState();
-  const rows = NODES.filter((n) => n.score !== undefined).sort((a, b) => b.score! - a.score!);
+  const rows = useNodes()
+    .filter((n) => n.score !== undefined)
+    .sort((a, b) => b.score! - a.score!);
   return (
     <Card className="p-5 sm:p-6">
       <CardHead title="Destination scoring" subtitle="Score = demand headroom × cold capacity × proximity × time-to-clear" />
@@ -181,8 +236,10 @@ function Candidates() {
 
 function ImpactCard() {
   const impact = useSim((s) => s.impact);
+  const remote = useBackend("impact", api.impact, usePollInterval());
   const resolved = useSim((s) => s.phase === "resolved");
-  const week = [...WEEK_KG, { day: "Today", kg: impact.kg, today: true }];
+  const past = remote ? remote.week.filter((d) => !d.today) : WEEK_KG;
+  const week = [...past, { day: "Today", kg: impact.kg, today: true }];
   const lakh = (n: number) => `₹${(n / 100000).toFixed(1)} L`;
   return (
     <Card className="p-5 sm:p-6 lg:sticky lg:top-32">

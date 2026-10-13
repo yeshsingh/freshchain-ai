@@ -5,6 +5,7 @@ import { Check, ChevronRight, LoaderCircle, PackageCheck, Sparkles, Store, Tag, 
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { INCIDENT } from "@/lib/data";
+import { useIncident } from "@/lib/live";
 import { clock, inr } from "@/lib/format";
 import { AUTO_EXECUTE_S, useSim, type WebhookCall } from "@/lib/sim";
 import { Button, ButtonLink, Card, CardHead, Chip, Eyebrow } from "../ui";
@@ -47,7 +48,7 @@ function Waiting() {
         <p className="mx-auto mt-2 max-w-sm text-sm text-ink-2">
           {pending
             ? phase === "held"
-              ? "You held this plan. Approve to transfer 84 punnets and reprice 100."
+              ? `You held this plan. Approve to transfer ${INCIDENT.transferUnits} punnets and reprice ${INCIDENT.markdownUnits}.`
               : `FreshChain will execute automatically in ${countdown ?? AUTO_EXECUTE_S}s unless you hold it.`
             : phase === "idle"
               ? "Actions appear here the moment FreshChain decides. Start the scenario to watch transfers and price changes fire."
@@ -81,17 +82,18 @@ const STEPS = ["Created", "Picked", "Dispatched", "Delivered"];
 
 function TransferCard() {
   const stage = useSim((s) => s.transferStage);
+  const inc = useIncident();
   const progress = [0.04, 0.16, 0.32, 0.58][stage];
   return (
     <Card className="p-5 sm:p-6 lg:col-span-7">
       <CardHead
         title="Redistribution"
         icon={Truck}
-        subtitle={`Transfer ${INCIDENT.transferId} · cold-chain van`}
+        subtitle={`Transfer ${inc.transferId} · cold-chain van`}
         right={<StatusBadge done={stage >= 1} label={stage >= 3 ? "In transit" : stage >= 1 ? "Executed" : "Creating"} />}
       />
       <div className="mt-6 flex items-center gap-4">
-        <Endpoint icon={Store} title="Store #042" sub="84 punnets out" />
+        <Endpoint icon={Store} title="Store #042" sub={`${inc.transferUnits} punnets out`} />
         <div className="relative h-10 flex-1">
           <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-line-strong" />
           <motion.div className="absolute top-1/2 h-[2px] -translate-y-1/2 rounded-full bg-brand" initial={false} animate={{ width: `${progress * 100}%` }} transition={{ duration: 1.4, ease: [0.25, 1, 0.5, 1] }} />
@@ -105,9 +107,9 @@ function TransferCard() {
               <Truck className="size-4" strokeWidth={1.75} />
             </span>
           </motion.div>
-          <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] text-ink-3">2.4 km · ETA 18 min</div>
+          <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] text-ink-3">{inc.hubKm} km · ETA {inc.etaMin} min</div>
         </div>
-        <Endpoint icon={Warehouse} title="Whitefield Hub" sub="13.4 units/h demand" align="right" />
+        <Endpoint icon={Warehouse} title={inc.hubName.replace(" Micro-Hub", " Hub")} sub={`${INCIDENT.hubHeadroom}/h spare demand`} align="right" />
       </div>
       <ol className="mt-9 grid grid-cols-4 gap-2">
         {STEPS.map((s, i) => {
@@ -152,6 +154,10 @@ function StatusBadge({ done, label }: { done: boolean; label: string }) {
 
 function PricingCard() {
   const price = useSim((s) => s.eslPrice);
+  const inc = useIncident();
+  const rate = INCIDENT.demandRate * (1 + (2.6 * inc.markdownPct) / 100); // same elasticity as the backend pricing agent
+  const lifted = Math.round(rate * 10) / 10;
+  const esl = useSim((s) => s.webhooks.find((w) => w.id === "w-esl")?.payload.labels as string[] | undefined);
   const marked = price !== INCIDENT.price;
   return (
     <Card className="p-5 sm:p-6 lg:col-span-5">
@@ -168,7 +174,7 @@ function PricingCard() {
           >
             <div className="flex items-start justify-between text-[10px] uppercase tracking-wider">
               <span>Strawberry · 250 g</span>
-              <span>ESL-3-114</span>
+              <span>{esl?.[0] ?? "ESL-3-101"}</span>
             </div>
             <div className="mt-3 flex items-end justify-between">
               <div>
@@ -191,15 +197,17 @@ function PricingCard() {
       <div className="mt-5 grid grid-cols-3 gap-3 text-center">
         <div>
           <div className="text-xs text-ink-3">Units</div>
-          <div className="text-[15px] font-semibold">100</div>
+          <div className="text-[15px] font-semibold">{inc.markdownUnits}</div>
         </div>
         <div>
           <div className="text-xs text-ink-3">Demand</div>
-          <div className="text-[15px] font-semibold">4.2 → 6.4/h</div>
+          <div className="text-[15px] font-semibold">
+            {INCIDENT.demandRate} → {lifted}/h
+          </div>
         </div>
         <div>
           <div className="text-xs text-ink-3">Clears in</div>
-          <div className="text-[15px] font-semibold">15.6 h</div>
+          <div className="text-[15px] font-semibold">{(inc.markdownUnits / rate).toFixed(1)} h</div>
         </div>
       </div>
     </Card>
@@ -239,12 +247,22 @@ function Console() {
   );
 }
 
-const HOOK_LABEL: Record<string, string> = {
-  "w-transfer": "Transfer 84 punnets to Whitefield Hub",
-  "w-esl": "Reprice 2 shelf labels ₹180 → ₹144",
-  "w-po": "Trim the next strawberry order by 12%",
-  "w-ticket": "Raise maintenance ticket for Chiller C-03",
-};
+/** Plain-English line for each call, read from the payload that was actually sent. */
+function hookLabel(h: WebhookCall): string {
+  const p = h.payload as Record<string, unknown>;
+  switch (h.id) {
+    case "w-transfer":
+      return `Transfer ${p.units ?? ""} punnets to Whitefield Hub`;
+    case "w-esl":
+      return `Reprice ${(p.labels as unknown[] | undefined)?.length ?? 2} shelf labels ₹${p.price_from} → ₹${p.price_to}`;
+    case "w-po":
+      return `Trim the next strawberry order by ${Math.abs(Number(p.adjustment_pct ?? 12))}%`;
+    case "w-ticket":
+      return `Raise maintenance ticket ${p.ticket ?? ""} for ${p.asset ?? "Chiller C-03"}`;
+    default:
+      return h.system;
+  }
+}
 
 function HookRow({ h, open, onToggle }: { h: WebhookCall; open: boolean; onToggle: () => void }) {
   const done = h.status === "done";
@@ -253,7 +271,7 @@ function HookRow({ h, open, onToggle }: { h: WebhookCall; open: boolean; onToggl
       <button onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-4 px-5 py-3 text-left transition-colors hover:bg-white/[0.03]">
         <span className="w-10 shrink-0 text-white/40">{clock(h.minute)}</span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-sans text-[13px] text-white/90">{HOOK_LABEL[h.id] ?? h.system}</span>
+          <span className="block truncate font-sans text-[13px] text-white/90">{hookLabel(h)}</span>
           <span className="block truncate text-[11px] text-white/40">
             <span className="text-[#8fd3a8]">{h.method}</span> {h.endpoint}
           </span>
@@ -293,11 +311,12 @@ function HookRow({ h, open, onToggle }: { h: WebhookCall; open: boolean; onToggl
 function ValueBanner() {
   const resolved = useSim((s) => s.phase === "resolved");
   const [open, setOpen] = useState(false);
+  const inc = useIncident();
   const lines = [
-    { label: "Hub sales · 84 × ₹180", v: 15120 },
-    { label: "Store sales at markdown · 96 × ₹144", v: 13824 },
-    { label: "Cold-chain transfer cost", v: -INCIDENT.transferCost },
-    { label: "Baseline if nothing done · 71 × ₹180", v: -12780 },
+    { label: `Hub sales · ${inc.transferUnits} × ₹${inc.price}`, v: inc.transferUnits * inc.price },
+    { label: `Store sales at markdown · ${inc.planSoldStore} × ₹${inc.priceAfter}`, v: inc.planSoldStore * inc.priceAfter },
+    { label: "Cold-chain transfer cost", v: -inc.transferCost },
+    { label: `Baseline if nothing done · ${inc.baselineSold} × ₹${inc.price}`, v: -inc.baselineSold * inc.price },
   ];
   return (
     <Card className={cn("overflow-hidden transition-colors duration-700 lg:col-span-12", resolved && "bg-brand-50")}>
@@ -307,11 +326,15 @@ function ValueBanner() {
         </span>
         <div className="flex-1">
           <div className="text-xs text-ink-3">{resolved ? "Value preserved" : "Potential value preserved"}</div>
-          <div className="text-2xl font-semibold tracking-[-0.02em] text-good-ink">{inr(INCIDENT.valuePreserved)}</div>
+          <div className="text-2xl font-semibold tracking-[-0.02em] text-good-ink">{inr(inc.valuePreserved)}</div>
         </div>
         <div className="hidden text-right text-xs text-ink-3 sm:block">
-          <div>113 → 4 punnets wasted</div>
-          <div>27 kg food · 68 kg CO₂e saved</div>
+          <div>
+            {inc.baselineWaste} → {inc.planWaste} punnets wasted
+          </div>
+          <div>
+            {Math.round(inc.kgSaved)} kg food · {Math.round(inc.co2Saved)} kg CO₂e saved
+          </div>
         </div>
         <Chip className="hidden sm:inline-flex">{open ? "Hide" : "How it's calculated"}</Chip>
       </button>
@@ -330,7 +353,7 @@ function ValueBanner() {
               ))}
               <li className="flex justify-between border-t border-line pt-2 font-semibold">
                 <span>Value preserved vs. doing nothing</span>
-                <span className="tabular text-good-ink">{inr(INCIDENT.valuePreserved)}</span>
+                <span className="tabular text-good-ink">{inr(inc.valuePreserved)}</span>
               </li>
             </ul>
           </motion.div>

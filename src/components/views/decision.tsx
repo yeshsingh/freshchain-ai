@@ -7,6 +7,7 @@ import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { HISTORY_SEED, INCIDENT, OPTIONS } from "@/lib/data";
 import { clock, inr } from "@/lib/format";
+import { useIncident } from "@/lib/live";
 import { AGENT_META, AUTO_EXECUTE_S, useSim, type AgentId } from "@/lib/sim";
 import { Button, ButtonLink, Card, CardHead, Chip, ConfidenceRing, Eyebrow } from "../ui";
 
@@ -89,8 +90,8 @@ const ROWS: Row[] = [
     n: "01",
     title: "Environment",
     value: "Temperature +3.2 °C",
-    evidence: "Chiller C-03 held above the 7.0 °C rule · humidity 91%",
-    impact: "Shelf life −14 h",
+    evidence: "Chiller C-03 at 7.2 °C vs 4.0 °C · humidity 91%",
+    impact: "Shelf life −7 h",
     agent: "quality",
     tone: "critical",
   },
@@ -98,8 +99,8 @@ const ROWS: Row[] = [
     n: "02",
     title: "Visual quality",
     value: "17% early bruising",
-    evidence: "4 of 24 punnets flagged by Gemini Vision (score ≥ 0.62)",
-    impact: "Degradation accelerating",
+    evidence: "4 of 24 units flagged by vision check",
+    impact: "Shelf life −7 h",
     agent: "quality",
     tone: "warning",
   },
@@ -107,7 +108,7 @@ const ROWS: Row[] = [
     n: "03",
     title: "Demand",
     value: "4.2 vs 10.8 units/h",
-    evidence: "Footfall −24% (rain) · −20% markdown lifts sales to 6.4/h",
+    evidence: "Footfall −24% · −20% markdown lifts sales to 6.4/h",
     impact: "Won't clear before expiry",
     agent: "pricing",
     tone: "critical",
@@ -115,8 +116,8 @@ const ROWS: Row[] = [
   {
     n: "04",
     title: "Network",
-    value: "Hub demand 13.4 units/h",
-    evidence: "Whitefield Micro-Hub · 2.4 km · cold space for 120",
+    value: "Whitefield Micro-Hub headroom 6.5/h",
+    evidence: "2.4 km · ETA 18 min · cold space for 120",
     impact: "Transfer clears in ~13 h",
     agent: "logistics",
     tone: "info",
@@ -125,11 +126,23 @@ const ROWS: Row[] = [
 
 function Evidence() {
   const agents = useSim((s) => s.agents);
+  const inc = useIncident();
+  const rows: Row[] = inc.evidence
+    ? inc.evidence.map((e, i) => ({
+        n: e.n,
+        title: e.title,
+        value: e.value,
+        evidence: e.evidence,
+        impact: e.impact,
+        agent: (["quality", "quality", "pricing", "logistics"] as AgentId[])[i] ?? "coordinator",
+        tone: e.tone === "critical" || e.tone === "warning" ? e.tone : "info",
+      }))
+    : ROWS;
   return (
     <Card className="p-5 sm:p-6">
       <CardHead title="Decision evidence" subtitle="Each signal is contributed by one agent and verified against sensor or sales data" />
       <ol className="mt-5 space-y-2">
-        {ROWS.map((r, i) => {
+        {rows.map((r, i) => {
           const ready = agents[r.agent] === "done";
           const working = agents[r.agent] === "running";
           // the temperature reading itself is known the moment the rule fires
@@ -197,6 +210,9 @@ function Evidence() {
 function Options() {
   const done = useSim((s) => s.agents.coordinator === "done");
   const running = useSim((s) => s.agents.coordinator === "running");
+  const inc = useIncident();
+  const options: { id: string; label: string; detail: string; sellThrough: number; waste: number; value: number; selected?: boolean }[] =
+    inc.options ?? [...OPTIONS];
   return (
     <Card className="p-5 sm:p-6">
       <CardHead title="Options evaluated" subtitle="Coordinator agent scores every action by expected sell-through, waste and value versus doing nothing" />
@@ -205,7 +221,7 @@ function Options() {
           {running ? (
             <span className="inline-flex items-center gap-2">
               <LoaderCircle className="size-3.5 animate-spin text-info" />
-              <span className="shimmer-text font-medium">Coordinator weighing 5 options…</span>
+              <span className="shimmer-text font-medium">Coordinator weighing {options.length} options…</span>
             </span>
           ) : (
             "Waiting for agent assessments"
@@ -223,8 +239,8 @@ function Options() {
               </tr>
             </thead>
             <tbody>
-              {OPTIONS.map((o, i) => {
-                const sel = "selected" in o && o.selected;
+              {options.map((o, i) => {
+                const sel = !!o.selected;
                 return (
                   <motion.tr
                     key={o.id}
@@ -279,6 +295,7 @@ function DecisionCard() {
   const agents = useSim((s) => s.agents);
   const countdown = useSim((s) => s.countdown);
   const { approve, hold } = useSim.getState();
+  const inc = useIncident();
   const forming = phase === "anomaly" || phase === "analyzing";
 
   if (forming)
@@ -316,9 +333,9 @@ function DecisionCard() {
               <div className="mt-2 text-xl font-semibold tracking-[-0.01em] text-ink">Redistribute + markdown</div>
             </div>
             <div className="relative">
-              <ConfidenceRing value={INCIDENT.confidence} size={60} />
+              <ConfidenceRing value={inc.confidence} size={60} />
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-[15px] font-semibold leading-none">{INCIDENT.confidence}%</span>
+                <span className="text-[15px] font-semibold leading-none">{inc.confidence}%</span>
                 <span className="mt-0.5 text-[9px] uppercase tracking-wide text-ink-3">conf.</span>
               </div>
             </div>
@@ -326,23 +343,24 @@ function DecisionCard() {
           <ul className="mt-4 space-y-2 text-[13px]">
             <li className="flex items-baseline justify-between gap-3">
               <span className="text-ink-2">Transfer</span>
-              <span className="text-right font-medium">84 → Whitefield Micro-Hub</span>
+              <span className="text-right font-medium">{inc.transferUnits} → {inc.hubName}</span>
             </li>
             <li className="flex items-baseline justify-between gap-3">
               <span className="text-ink-2">Markdown</span>
-              <span className="text-right font-medium">100 · ₹180 → ₹144</span>
+              <span className="text-right font-medium">{inc.markdownUnits} · ₹{inc.price} → ₹{inc.priceAfter}</span>
             </li>
             <li className="flex items-baseline justify-between gap-3">
               <span className="text-ink-2">Expected waste</span>
-              <span className="text-right font-medium">113 → 4 punnets</span>
+              <span className="text-right font-medium">{inc.baselineWaste} → {inc.planWaste} punnets</span>
             </li>
           </ul>
         </div>
         <div className="p-5">
           <div className="flex items-baseline justify-between">
             <span className="text-xs text-ink-3">Value preserved</span>
-            <span className="text-2xl font-semibold tracking-[-0.02em] text-good-ink">{inr(INCIDENT.valuePreserved)}</span>
+            <span className="text-2xl font-semibold tracking-[-0.02em] text-good-ink">{inr(inc.valuePreserved)}</span>
           </div>
+          {inc.rationale && <p className="mt-2 text-xs leading-relaxed text-ink-2">{inc.rationale}</p>}
           <div className="mt-3 rounded-xl bg-subtle px-3 py-2.5 text-xs text-ink-2">
             <span className="font-medium text-ink">Fallback armed:</span> if under 70% sold by T−4 h, offload the rest to FreshPress Juicery, then
             Annapurna Food Rescue.
@@ -398,7 +416,8 @@ function DecisionCard() {
 
 function ModelFooter() {
   const [open, setOpen] = useState(false);
-  const json = {
+  const inc = useIncident();
+  const fallback = {
     batch: "STB-042",
     decay: INCIDENT.bruising,
     shelf_h: INCIDENT.shelfAfter,
@@ -406,20 +425,26 @@ function ModelFooter() {
     fallback: "B2B_OFFLOAD@T-4h",
     confidence: INCIDENT.confidence / 100,
   };
+  const meta = inc.modelMeta;
+  const engine = !inc.fromBackend
+    ? `Gemini Flash · 1 call · ${INCIDENT.tokensIn.toLocaleString("en-IN")} tokens (${INCIDENT.tokensCachedPct}% cached) · $${INCIDENT.costUsd}`
+    : inc.modelUsed === "rules"
+      ? "Rules engine · 0 tokens · add a Gemini key to let the model choose"
+      : `${inc.modelUsed} · 1 call · ${meta?.tokensIn ?? "?"} tokens in · ${meta?.latencyMs ?? "?"} ms`;
   return (
     <div className="border-t border-line px-5 py-4">
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left text-xs text-ink-3 transition-colors hover:text-ink" aria-expanded={open}>
         <Cpu className="size-3.5 shrink-0" />
-        <span className="flex-1">
-          Gemini Flash · 1 call · {INCIDENT.tokensIn.toLocaleString("en-IN")} tokens ({INCIDENT.tokensCachedPct}% cached) · ${INCIDENT.costUsd}
-        </span>
+        <span className="flex-1">{engine}</span>
         <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
       </button>
       <AnimatePresence initial={false}>
         {open && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }} className="overflow-hidden">
             <p className="mt-3 text-xs text-ink-3">Structured JSON output — no conversational filler, no chain-of-thought.</p>
-            <pre className="mt-2 overflow-x-auto rounded-xl bg-ink p-3 font-mono text-[11px] leading-relaxed text-white/85">{JSON.stringify(json, null, 2)}</pre>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-xl bg-ink p-3 font-mono text-[11px] leading-relaxed text-white/85">
+              {JSON.stringify(inc.decisionJson ?? fallback, null, 2)}
+            </pre>
           </motion.div>
         )}
       </AnimatePresence>

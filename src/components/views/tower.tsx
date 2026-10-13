@@ -18,9 +18,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { CHILLERS, HISTORY_SEED, INCIDENT, STORE } from "@/lib/data";
-import { clock, fmt, inr } from "@/lib/format";
-import { useStoreCounts } from "@/lib/live";
-import { AGENT_META, AUTO_EXECUTE_S, useSim, type AgentId } from "@/lib/sim";
+import { api } from "@/lib/api";
+import { clock, fmt, inr, istTime } from "@/lib/format";
+import { useBackend, useIncident, usePollInterval, useStoreCounts } from "@/lib/live";
+import { AGENT_META, AUTO_EXECUTE_S, useSim, type AgentId, type Tone } from "@/lib/sim";
 import { Sparkline } from "../charts";
 import { AnimatedNumber, Button, ButtonLink, Card, CardHead, Chip, Eyebrow, LiveDot, toneMeta } from "../ui";
 
@@ -75,8 +76,13 @@ export function TowerView() {
 
 /* ------------------------------------------------------------------ */
 
+function useOverview() {
+  return useBackend("overview", api.overview, usePollInterval());
+}
+
 function CountTiles() {
-  const c = useStoreCounts();
+  const local = useStoreCounts();
+  const c = useOverview()?.riskSummary ?? local;
   const tiles = [
     { key: "healthy", label: "Healthy", value: c.healthy, dot: "bg-good", icon: CircleCheck, href: "/inventory?status=healthy" },
     { key: "risk", label: "At risk", value: c.risk, dot: "bg-warn", icon: CircleAlert, href: "/inventory?status=risk" },
@@ -268,6 +274,7 @@ function Analysing() {
 }
 
 function NeedsAttention() {
+  const inc = useIncident();
   const phase = useSim((s) => s.phase);
   const countdown = useSim((s) => s.countdown);
   const approve = useSim((s) => s.approve);
@@ -298,9 +305,10 @@ function NeedsAttention() {
       </div>
       <div className="mt-5 flex flex-col gap-4 rounded-xl bg-subtle p-4 sm:flex-row sm:items-center">
         <div className="flex-1">
-          <div className="text-xs text-ink-3">FreshChain recommendation · {INCIDENT.confidence}% confidence</div>
+          <div className="text-xs text-ink-3">FreshChain recommendation · {inc.confidence}% confidence</div>
           <div className="mt-1 text-[15px] font-semibold">
-            Transfer 84 units to Whitefield Hub <span className="font-normal text-ink-3">·</span> Markdown 100 units by 20%
+            Transfer {inc.transferUnits} units to {inc.hubName.replace(" Micro-Hub", " Hub")} <span className="font-normal text-ink-3">·</span> Markdown{" "}
+            {inc.markdownUnits} units by {inc.markdownPct}%
           </div>
         </div>
         <div className="flex gap-2">
@@ -369,6 +377,7 @@ function Executing() {
 }
 
 function Resolved() {
+  const inc = useIncident();
   return (
     <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
       <div className="flex flex-1 items-start gap-4">
@@ -378,7 +387,8 @@ function Resolved() {
         <div>
           <div className="text-[17px] font-semibold tracking-[-0.01em]">Resolved autonomously</div>
           <p className="mt-1 max-w-md text-sm text-ink-2">
-            84 strawberry punnets are on their way to Whitefield Micro-Hub and 100 are repriced to ₹144. Purchasing and maintenance were
+            {inc.transferUnits} strawberry punnets are on their way to {inc.hubName} and {inc.markdownUnits} are repriced to ₹{inc.priceAfter}.
+            Purchasing and maintenance were
             notified.
           </p>
           <div className="mt-4 flex gap-2">
@@ -393,7 +403,7 @@ function Resolved() {
       </div>
       <div className="rounded-xl bg-good-50 px-5 py-4 text-good-ink">
         <div className="text-xs">Value preserved</div>
-        <div className="mt-0.5 text-[26px] font-semibold tracking-[-0.02em]">{inr(INCIDENT.valuePreserved)}</div>
+        <div className="mt-0.5 text-[26px] font-semibold tracking-[-0.02em]">{inr(inc.valuePreserved)}</div>
       </div>
     </div>
   );
@@ -402,13 +412,14 @@ function Resolved() {
 /* ------------------------------------------------------------------ */
 
 function TodayImpact() {
+  const inc = useIncident();
   const impact = useSim((s) => s.impact);
   const resolved = useSim((s) => s.phase === "resolved");
   const stats = [
-    { label: "Waste prevented", value: impact.value, format: inr, delta: inr(INCIDENT.valuePreserved) },
-    { label: "Food saved", value: impact.kg, format: (n: number) => `${fmt(n)} kg`, delta: "27 kg" },
-    { label: "CO₂e avoided", value: impact.co2, format: (n: number) => `${fmt(n)} kg`, delta: "68 kg" },
-    { label: "Autonomous actions", value: impact.actions, format: (n: number) => fmt(n), delta: "4" },
+    { label: "Waste prevented", value: impact.value, format: inr, delta: inr(inc.valuePreserved) },
+    { label: "Food saved", value: impact.kg, format: (n: number) => `${fmt(n)} kg`, delta: `${Math.round(inc.kgSaved)} kg` },
+    { label: "CO₂e avoided", value: impact.co2, format: (n: number) => `${fmt(n)} kg`, delta: `${Math.round(inc.co2Saved)} kg` },
+    { label: "Autonomous actions", value: impact.actions, format: (n: number) => fmt(n), delta: String(INCIDENT.actionsExecuted) },
   ];
   return (
     <Card className="p-5 sm:p-6">
@@ -446,21 +457,24 @@ function TodayImpact() {
 function ColdChain() {
   const temps = useSim((s) => s.temps);
   const now = temps[temps.length - 1];
+  const zones = useOverview()?.coldChain;
+  const rows = zones
+    ? zones.map((z) => ({ id: z.zone, label: z.zone, sub: z.batchId, base: z.baselineC, temp: z.batchId === "STB-042" ? now : z.tempC }))
+    : CHILLERS.map((c) => ({ id: c.id, label: c.label, sub: c.zone, base: c.base, temp: c.id === "C-03" ? now : c.base + (c.drift ?? 0) }));
   return (
     <Card className="p-5">
-      <CardHead title="Cold chain" icon={Snowflake} subtitle="5 zones · live" right={<LiveDot tone="good" />} />
+      <CardHead title="Cold chain" icon={Snowflake} subtitle={`${rows.length} zones · live`} right={<LiveDot tone="good" />} />
       <ul className="mt-4 space-y-1">
-        {CHILLERS.map((c) => {
-          const live = c.id === "C-03";
-          const v = live ? now : c.base + (c.drift ?? 0);
-          const delta = v - c.base;
+        {rows.map((c) => {
+          const live = c.sub === "STB-042" || c.id === "C-03";
+          const delta = Math.round((c.temp - c.base) * 10) / 10;
           const tone = delta >= 3 ? "critical" : delta >= 1 ? "warning" : "good";
           return (
             <li key={c.id} className={cn("flex items-center gap-3 rounded-xl px-2 py-2 transition-colors", live && delta >= 1 && "bg-subtle")}>
               <span className={cn("size-2 shrink-0 rounded-full transition-colors", toneMeta(tone).dot)} />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] text-ink">{c.label}</div>
-                <div className="text-[11px] text-ink-3">{c.zone}</div>
+                <div className="text-[11px] text-ink-3">{c.sub}</div>
               </div>
               {live && (
                 <div className="w-16 shrink-0">
@@ -468,7 +482,7 @@ function ColdChain() {
                 </div>
               )}
               <div className="w-16 text-right">
-                <div className="text-[13px] font-medium tabular">{v.toFixed(1)} °C</div>
+                <div className="text-[13px] font-medium tabular">{c.temp.toFixed(1)} °C</div>
                 {delta >= 0.95 && <div className={cn("text-[11px] tabular", toneMeta(tone).text)}>+{delta.toFixed(1)}</div>}
               </div>
             </li>
@@ -479,17 +493,31 @@ function ColdChain() {
   );
 }
 
+type ActivityRow = { id: string; time: string; title: string; detail?: string; tone: Tone; href?: string };
+
 function Activity() {
   const feed = useSim((s) => s.feed);
-  const seeded = HISTORY_SEED.slice(0, Math.max(0, 5 - feed.length)).map((h) => ({
-    id: h.id,
-    minute: h.minute,
-    title: `${h.title} · ${h.batchId}`,
-    detail: h.detail,
-    tone: (h.kind === "sensor" ? "warning" : "good") as "warning" | "good",
-    href: `/history?open=${h.id}`,
-  }));
-  const rows = [...feed.slice(0, 5), ...seeded];
+  const events = useBackend("events", api.events, usePollInterval());
+  const rows: ActivityRow[] = events
+    ? events.events.slice(0, 6).map((e) => ({
+        id: e.id,
+        time: istTime(e.timestamp),
+        title: e.batchId ? `${e.title} · ${e.batchId}` : e.title,
+        detail: e.detail,
+        tone: e.tone,
+        href: `/history?open=${e.id}`,
+      }))
+    : [
+        ...feed.slice(0, 5).map((e) => ({ ...e, time: clock(e.minute) })),
+        ...HISTORY_SEED.slice(0, Math.max(0, 5 - feed.length)).map((h) => ({
+          id: h.id,
+          time: clock(h.minute),
+          title: `${h.title} · ${h.batchId}`,
+          detail: h.detail,
+          tone: (h.kind === "sensor" ? "warning" : "good") as Tone,
+          href: `/history?open=${h.id}`,
+        })),
+      ];
   return (
     <Card className="p-5">
       <CardHead
@@ -514,7 +542,7 @@ function Activity() {
               className="overflow-hidden"
             >
               <Link href={e.href ?? "/history"} className="-mx-2 flex gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-subtle/70">
-                <span className="w-10 shrink-0 pt-px font-mono text-[11px] text-ink-3">{clock(e.minute)}</span>
+                <span className="w-10 shrink-0 pt-px font-mono text-[11px] text-ink-3">{e.time}</span>
                 <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", toneMeta(e.tone).dot)} />
                 <div className="min-w-0">
                   <div className="text-[13px] leading-snug text-ink">{e.title}</div>

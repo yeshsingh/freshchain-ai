@@ -41,3 +41,7 @@ export function seededSeries(seed: number, n: number, base: number, jitter: numb
     return Math.round(v * 100) / 100;
   });
 }
+
+/** Store-local (IST) clock time for a backend timestamp. */
+export const istTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" });

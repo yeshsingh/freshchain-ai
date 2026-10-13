@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import { BatchView } from "@/components/views/batch";
 import { BATCHES, getBatch } from "@/lib/data";
 
@@ -15,6 +14,5 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  if (!getBatch(id)) notFound();
   return <BatchView id={id} />;
 }

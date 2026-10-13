@@ -124,7 +124,7 @@ export function HeroPreview() {
                     AI decision <span className="text-ink">92% confidence</span>
                   </div>
                   <div className="mt-1.5 text-[13px] font-semibold">Transfer 84 → Whitefield Hub · Markdown 100 by 20%</div>
-                  <div className="mt-1 text-[11px] text-ink-2">Waste 113 → 4 punnets · fallback: B2B offload at T−4 h</div>
+                  <div className="mt-1 text-[11px] text-ink-2">Waste 113 → 0 punnets · fallback: B2B offload at T−4 h</div>
                 </motion.div>
               )}
               {step >= 4 && (
@@ -156,7 +156,7 @@ export function HeroPreview() {
           <div className="mt-3 flex items-center justify-between rounded-xl bg-surface px-4 py-3 shadow-card">
             <span className="text-[11px] text-ink-3">Value preserved</span>
             <span className={cn("text-[17px] font-semibold tracking-[-0.01em] transition-colors duration-500", step === 5 ? "text-good-ink" : "text-ink-3/50")}>
-              {step === 5 ? "₹15,714" : "—"}
+              {step === 5 ? "₹16,290" : "—"}
             </span>
           </div>
         </div>

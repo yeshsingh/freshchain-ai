@@ -6,12 +6,14 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   CircleCheck,
+  CircleDashed,
   Cpu,
   Eye,
   MapPin,
   Play,
   Radio,
   RotateCcw,
+  Server,
   Sparkles,
   Webhook,
   X,
@@ -205,9 +207,12 @@ export function LoopIndicator({ className }: { className?: string }) {
 
 function SystemHealth() {
   const phase = useSim((s) => s.phase);
+  const mode = useSim((s) => s.mode);
+  const backend = useSim((s) => s.backend);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const busy = phase === "anomaly" || phase === "analyzing" || phase === "executing";
+  const gemini = backend?.ai.provider === "gemini";
 
   useEffect(() => {
     if (!open) return;
@@ -222,9 +227,25 @@ function SystemHealth() {
   }, [open]);
 
   const rows = [
+    {
+      icon: Server,
+      label: "Backend",
+      value: mode === "live" ? `FastAPI · ${backend?.databaseEngine ?? "db"} · connected` : mode === "checking" ? "Connecting…" : "Offline demo · no backend configured",
+      ok: mode === "live",
+    },
     { icon: Radio, label: "Sensor stream", value: `${STORE.sensors.toLocaleString("en-IN")} sensors · MQTT`, ok: true },
-    { icon: Eye, label: "Vision model", value: "Gemini Flash · p50 410 ms", ok: true },
-    { icon: Cpu, label: "Agent engine", value: busy ? "4 agents · active" : "4 agents · idle", ok: true },
+    {
+      icon: Eye,
+      label: "Vision model",
+      value: mode === "live" ? (gemini ? `${backend?.ai.model} · low-res images` : "Simulated inspector · add a Gemini key") : "Gemini Flash · p50 410 ms",
+      ok: true,
+    },
+    {
+      icon: Cpu,
+      label: "Decision engine",
+      value: `${mode === "live" ? (gemini ? `Rules + ${backend?.ai.model}` : "Rules engine") : "4 agents"} · ${busy ? "active" : "idle"}`,
+      ok: true,
+    },
     { icon: Webhook, label: "Action webhooks", value: "4 endpoints · 99.9%", ok: true },
   ];
 
@@ -259,13 +280,15 @@ function SystemHealth() {
                     <div className="text-[13px]">{r.label}</div>
                     <div className="text-xs text-ink-3">{r.value}</div>
                   </div>
-                  <CircleCheck className="size-4 text-good" />
+                  {r.ok ? <CircleCheck className="size-4 text-good" /> : <CircleDashed className="size-4 text-ink-3" />}
                 </li>
               ))}
             </ul>
             <div className="mt-1 flex items-center justify-between rounded-xl bg-subtle px-3 py-2 text-xs text-ink-2">
-              <span>AI spend today</span>
-              <span className="font-medium tabular text-ink">$0.04 · 19 evaluations</span>
+              <span>{mode === "live" ? "Monitor sweep" : "AI spend today"}</span>
+              <span className="font-medium tabular text-ink">
+                {mode === "live" ? `every ${Math.round((backend?.monitorIntervalS ?? 300) / 60)} min` : "$0.04 · 19 evaluations"}
+              </span>
             </div>
           </motion.div>
         )}
@@ -451,6 +474,7 @@ export function SimulationRuntime() {
   pathRef.current = path;
 
   useEffect(() => {
+    if (useSim.getState().mode === "checking") useSim.getState().connect();
     const id = setInterval(() => useSim.getState().tick(), 1000);
     return () => clearInterval(id);
   }, []);
@@ -479,7 +503,9 @@ export function SimulationRuntime() {
     // strip the flag first so a StrictMode re-run (or a refresh) doesn't start twice
     window.history.replaceState(null, "", window.location.pathname);
     useSim.getState().setFollow(true);
-    setTimeout(() => useSim.getState().start(), 700);
+    // wait until we know whether the backend is there, so the run goes live when it can
+    const begin = () => (useSim.getState().mode === "checking" ? setTimeout(begin, 150) : useSim.getState().start());
+    setTimeout(begin, 700);
   }, []);
 
   return null;

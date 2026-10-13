@@ -7,7 +7,14 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 import { STORE, type Status } from "@/lib/data";
 import { fmt, inr, shelf } from "@/lib/format";
-import { useLiveBatches, type LiveBatch } from "@/lib/live";
+import { api } from "@/lib/api";
+import type { IconKey } from "@/lib/data";
+import { useBackend, useLiveBatches, usePollInterval, type LiveBatch } from "@/lib/live";
+
+type RowItem = Pick<
+  LiveBatch,
+  "id" | "name" | "live" | "units" | "unitLabel" | "location" | "risk" | "shelfLifeH" | "printedShelfH" | "signals" | "price" | "status" | "action" | "actionNote"
+> & { icon: IconKey; category: string };
 import { BatchIcon, Card, Chip, PageTitle, RiskMeter, StatusPill } from "../ui";
 import type { Tone } from "@/lib/sim";
 
@@ -31,7 +38,15 @@ const actionTone = (a: string): Tone =>
           : "warning";
 
 export function InventoryView() {
-  const batches = useLiveBatches();
+  const local = useLiveBatches();
+  const remote = useBackend("items", api.items, usePollInterval());
+  // backend rows when connected; the live strawberry row follows the on-screen incident timeline
+  const batches: RowItem[] = remote
+    ? remote.items.map((i) => {
+        const mine = local.find((b) => b.id === i.id && b.live);
+        return mine ?? { ...i, icon: i.icon as IconKey, live: false, actionNote: i.actionNote ?? undefined };
+      })
+    : local;
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | Status>("all");
 
@@ -104,7 +119,17 @@ export function InventoryView() {
           {rows.map((b) => (
             <Row key={b.id} b={b} />
           ))}
-          {rows.length === 0 && <li className="px-5 py-12 text-center text-sm text-ink-3">No batches match.</li>}
+          {rows.length === 0 && (
+            <li className="px-5 py-12 text-center">
+              <div className="text-sm font-medium text-ink-2">{q ? "No batches match your search." : "No tracked batches in this state right now."}</div>
+              {!q && filter !== "all" && (
+                <div className="mx-auto mt-1 max-w-md text-xs text-ink-3">
+                  FreshChain follows {batches.length} high-value batches in detail; the store&apos;s other SKUs in this tier are handled by
+                  rule-based FEFO markdowns.
+                </div>
+              )}
+            </li>
+          )}
         </ul>
       </Card>
       <p className="mt-3 text-xs text-ink-3">
@@ -114,7 +139,7 @@ export function InventoryView() {
   );
 }
 
-function Row({ b }: { b: LiveBatch }) {
+function Row({ b }: { b: RowItem }) {
   const hot = b.live && (b.status === "critical" || b.status === "risk");
   return (
     <motion.li layout transition={{ type: "spring", stiffness: 380, damping: 38 }} className="border-b border-line last:border-0">

@@ -2,17 +2,19 @@
 
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronDown, Factory, HeartHandshake, Leaf, ListChecks, Sparkles, Tag, Thermometer, Truck, Zap, type LucideIcon } from "lucide-react";
+import { ChevronDown, Eye, Factory, HeartHandshake, Leaf, ListChecks, PackagePlus, Sparkles, Tag, Thermometer, Truck, Zap, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { HISTORY_SEED, STORE, type HistoryKind } from "@/lib/data";
-import { clock, inr } from "@/lib/format";
+import { api, type EventOut } from "@/lib/api";
+import { clock, inr, istTime } from "@/lib/format";
+import { useBackend, useIncident, usePollInterval } from "@/lib/live";
 import { useSim, type FeedKind, type Tone } from "@/lib/sim";
 import { Card, PageTitle, toneMeta } from "../ui";
 
 type Item = {
   id: string;
-  minute: number;
+  time: string;
   icon: LucideIcon;
   tone: Tone;
   title: string;
@@ -45,12 +47,30 @@ const LIVE_META: Record<FeedKind, { icon: LucideIcon; group: Item["group"] }> = 
 
 const LIVE_EVIDENCE: Record<string, string[]> = {
   decision: [
-    "01 Environment · +3.2 °C → shelf life −14 h",
-    "02 Visual · 17% early bruising → degradation accelerating",
+    "01 Environment · +3.2 °C → shelf life −7 h",
+    "02 Visual · 17% early bruising → shelf life −7 h",
     "03 Demand · 4.2 vs 10.8 units/h → won't clear before expiry",
-    "04 Network · hub demand 13.4/h → transfer clears in ~13 h",
+    "04 Network · Whitefield headroom 6.5/h → transfer clears in ~13 h",
   ],
 };
+
+const ACTION_ICON: Record<string, LucideIcon> = { MARKDOWN: Tag, TRANSFER: Truck, B2B_OFFER: Factory, DONATION: HeartHandshake };
+const KIND_ICON: Record<string, LucideIcon> = { sensor: Thermometer, vision: Eye, agent: Sparkles, decision: ListChecks, impact: Leaf, intake: PackagePlus };
+
+function fromEvent(e: EventOut, decisionEvidence: string[] | null): Item {
+  return {
+    id: e.id,
+    time: istTime(e.timestamp),
+    icon: (e.data.actionType && ACTION_ICON[e.data.actionType]) || KIND_ICON[e.kind] || Zap,
+    tone: e.tone,
+    title: e.title,
+    detail: e.detail,
+    batchId: e.batchId ?? undefined,
+    value: e.data.value,
+    evidence: e.data.evidence ?? (e.kind === "decision" && e.title.startsWith("Decision") ? decisionEvidence ?? undefined : undefined),
+    group: e.group,
+  };
+}
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -61,6 +81,9 @@ const FILTERS = [
 
 export function HistoryView() {
   const feed = useSim((s) => s.feed);
+  const remote = useBackend("events", api.events, usePollInterval());
+  const inc = useIncident();
+  const decisionEvidence = inc.evidence ? inc.evidence.map((r) => `${r.n} ${r.title} · ${r.value} → ${r.impact}`) : null;
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
   const [open, setOpen] = useState<string | null>(null);
 
@@ -74,7 +97,7 @@ export function HistoryView() {
 
   const live: Item[] = feed.map((e) => ({
     id: e.id,
-    minute: e.minute,
+    time: clock(e.minute),
     icon: LIVE_META[e.kind].icon,
     tone: e.tone,
     title: e.title,
@@ -84,8 +107,9 @@ export function HistoryView() {
     evidence: LIVE_EVIDENCE[e.kind],
     live: true,
   }));
-  const seeded: Item[] = HISTORY_SEED.map((h) => ({ ...h, ...SEED_META[h.kind] }));
-  const items = [...live, ...seeded].filter((i) => filter === "all" || i.group === filter);
+  const seeded: Item[] = HISTORY_SEED.map((h) => ({ ...h, time: clock(h.minute), ...SEED_META[h.kind] }));
+  const all = remote ? remote.events.map((e) => fromEvent(e, decisionEvidence)) : [...live, ...seeded];
+  const items = all.filter((i) => filter === "all" || i.group === filter);
 
   return (
     <>
@@ -144,7 +168,7 @@ export function HistoryView() {
                     }}
                     className={cn("flex w-full items-start gap-4 rounded-xl px-3 py-3 text-left transition-colors", canOpen && "cursor-pointer hover:bg-subtle/70", isOpen && "bg-subtle/70")}
                   >
-                    <span className="w-11 shrink-0 pt-1.5 font-mono text-xs text-ink-3">{clock(it.minute)}</span>
+                    <span className="w-11 shrink-0 pt-1.5 font-mono text-xs text-ink-3">{it.time}</span>
                     <span className={cn("relative z-10 flex size-8 shrink-0 items-center justify-center rounded-full", m.bg, m.text)}>
                       <it.icon className="size-4" strokeWidth={1.75} />
                     </span>
